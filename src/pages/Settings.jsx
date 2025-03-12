@@ -118,7 +118,7 @@ const Settings = () => {
               <div className="flex items-start gap-6">
                 <div className="relative">
                 <div className="w-32 h-32 rounded-full bg-gradient-to-r from-blue-500 to-blue-600 flex items-center justify-center text-white text-4xl font-bold">
-                {name.charAt(0)}
+                {'J'}
               </div>
                   <button className="absolute bottom-0 right-0 bg-blue-500 text-white p-2 rounded-full">
                     <Camera className="w-4 h-4" />
