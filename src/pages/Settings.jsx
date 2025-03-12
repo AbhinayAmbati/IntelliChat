@@ -19,8 +19,10 @@ import {
   X,
   Moon,
   Sun,
-  Monitor
+  Monitor,
+  Github
 } from 'lucide-react';
+import { FcGoogle } from 'react-icons/fc';
 import NavbarIn from '../components/NavbarIn';
 
 const Settings = () => {
@@ -162,7 +164,7 @@ const Settings = () => {
                 <div className="flex justify-between items-center py-2 border-b dark:border-gray-700">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center">
-                      <span className="text-blue-600 dark:text-blue-300 font-bold">G</span>
+                      <span className="text-blue-600 dark:text-blue-300 font-bold"><FcGoogle/></span>
                     </div>
                     <span className="text-gray-700 dark:text-gray-300">Google</span>
                   </div>
@@ -171,7 +173,7 @@ const Settings = () => {
                 <div className="flex justify-between items-center py-2 border-b dark:border-gray-700">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-full bg-gray-800 dark:bg-gray-700 flex items-center justify-center">
-                      <span className="text-white font-bold">G</span>
+                      <span className="text-white font-bold"><Github/></span>
                     </div>
                     <span className="text-gray-700 dark:text-gray-300">GitHub</span>
                   </div>
@@ -738,7 +740,7 @@ const Settings = () => {
           <div className="flex gap-8">
 
             {/* Sidebar */}
-            <div className="w-64 flex-shrink-0">
+            <div className="w-64 flex-shrink-0 relative">
               <nav className="space-y-1">
                 {tabs.map((tab) => {
                   const Icon = tab.icon;
