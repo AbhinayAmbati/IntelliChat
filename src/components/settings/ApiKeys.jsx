@@ -79,7 +79,7 @@ const ApiKeys = ({ apiKeys, setApiKeys, showApiKey, setShowApiKey }) => {
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex gap-4 text-sm text-gray-500 dark:text-gray-400">
+            <div className="flex gap-4 text-sm text-gray-500  dark:text-gray-400">
               <span>Created: {apiKey.created}</span>
               <span>Last used: {apiKey.lastUsed}</span>
             </div>
