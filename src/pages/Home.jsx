@@ -4,6 +4,28 @@ import Sidebar from '../components/Sidebar';
 import NavbarIn from '../components/NavbarIn';
 import geminiService from '../services/geminiService';
 
+// Safe localStorage utility
+const safeLocalStorage = {
+  set: (key, value) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+      return false;
+    }
+  },
+  get: (key, defaultValue = null) => {
+    try {
+      const value = localStorage.getItem(key);
+      return value ? JSON.parse(value) : defaultValue;
+    } catch (error) {
+      console.error('Error reading from localStorage:', error);
+      return defaultValue;
+    }
+  }
+};
+
 // Simple sentiment analysis utility
 const analyzeSentiment = (text) => {
   // List of positive and negative words for basic sentiment analysis
@@ -38,38 +60,17 @@ const Home = () => {
   const [error, setError] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [userMood, setUserMood] = useState('neutral'); // Added state for tracking user mood
-  const [showMoodIndicator, setShowMoodIndicator] = useState(false); // Control visibility of mood indicator
+  const [userMood, setUserMood] = useState('neutral');
+  const [showMoodIndicator, setShowMoodIndicator] = useState(false);
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [chatHistory, setChatHistory] = useState([]);
   const recognitionRef = useRef(null);
   const timerRef = useRef(null);
-  const chatEndRef = useRef(null); // Reference for auto-scrolling
+  const chatEndRef = useRef(null);
 
-  // Initialize chat with welcome message
+  // Load chat history from localStorage on component mount
   useEffect(() => {
-    // Try to load chat messages from localStorage
-    const storedMessages = loadChatMessages();
-    if (storedMessages && storedMessages.length > 0) {
-      setChatMessages(storedMessages);
-    } else {
-      setChatMessages([
-        {
-          id: 1,
-          type: 'bot',
-          content: 'Hello! How can I help you today?',
-          timestamp: new Date().toLocaleTimeString(),
-        },
-      ]);
-    }
-    
-    // Try to get existing conversation ID from localStorage
-    const existingConversationId = localStorage.getItem('current_conversation');
-    if (existingConversationId) {
-      console.log('Resuming existing conversation:', existingConversationId);
-      setConversation(existingConversationId);
-    } else {
-      // Initialize new Gemini API conversation
-      initConversation();
-    }
+    loadChatHistory();
 
     // Cleanup function for speech recognition
     return () => {
@@ -81,14 +82,22 @@ const Home = () => {
       }
     };
   }, []);
-  
-  // Save chat messages to localStorage whenever they change
+
+  // Initialize Gemini conversation
   useEffect(() => {
-    if (chatMessages.length > 0) {
-      saveChatMessages(chatMessages);
+    if (activeChatId) {
+      // Try to get existing conversation ID for this chat
+      const existingConversationId = getConversationIdForChat(activeChatId);
+      if (existingConversationId) {
+        console.log('Resuming existing conversation:', existingConversationId);
+        setConversation(existingConversationId);
+      } else {
+        // Initialize new Gemini API conversation
+        initConversation();
+      }
     }
-  }, [chatMessages]);
-  
+  }, [activeChatId]);
+
   // Auto-scroll to bottom when new messages appear
   useEffect(() => {
     if (chatEndRef.current) {
@@ -96,23 +105,143 @@ const Home = () => {
     }
   }, [chatMessages]);
 
-  // Helper functions for localStorage
-  const saveChatMessages = (messages) => {
+  // Auto-save messages whenever they change
+  useEffect(() => {
+    // Save messages every time they change
+    if (activeChatId && chatMessages.length > 0) {
+      updateChatInHistory(activeChatId, chatMessages);
+    }
+  }, [chatMessages]);
+
+  // Handle storage events from other tabs/windows
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'chatHistory') {
+        try {
+          const newChatHistory = JSON.parse(e.newValue);
+          setChatHistory(newChatHistory);
+          
+          // Update current chat messages if active chat was updated elsewhere
+          if (activeChatId) {
+            const updatedChat = newChatHistory.find(chat => chat.id === activeChatId);
+            if (updatedChat && updatedChat.messages) {
+              setChatMessages(updatedChat.messages);
+            }
+          }
+        } catch (error) {
+          console.error('Error handling storage event:', error);
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [activeChatId]);
+
+  // Helper function to load chat history
+  const loadChatHistory = () => {
     try {
-      localStorage.setItem('chat_messages', JSON.stringify(messages));
-    } catch (err) {
-      console.error('Error saving chat messages:', err);
+      // Try to load chat history from localStorage
+      const savedChats = safeLocalStorage.get('chatHistory', []);
+      console.log('Loaded chat history from localStorage:', savedChats);
+      
+      if (savedChats && savedChats.length > 0) {
+        setChatHistory(savedChats);
+        
+        // Set the most recent chat as active if available
+        if (!activeChatId) {
+          setActiveChatId(savedChats[0].id);
+          console.log('Setting active chat to first chat in history:', savedChats[0].id);
+          console.log('Messages for this chat:', savedChats[0].messages || []);
+          setChatMessages(savedChats[0].messages || []);
+          
+          // If this chat has a saved conversation ID, restore it
+          const savedConversationId = getConversationIdForChat(savedChats[0].id);
+          if (savedConversationId) {
+            setConversation(savedConversationId);
+          } else {
+            // Initialize new conversation if needed
+            initConversation();
+          }
+        }
+      } else {
+        // Create a new chat if none exists
+        console.log('No chats in history, creating new chat');
+        handleNewChat();
+      }
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+      // Create a new chat as fallback
+      handleNewChat();
     }
   };
-  
-  const loadChatMessages = () => {
+
+  // Helper function to get conversation ID for a specific chat
+  const getConversationIdForChat = (chatId) => {
     try {
-      const saved = localStorage.getItem('chat_messages');
-      return saved ? JSON.parse(saved) : null;
+      const conversationMap = safeLocalStorage.get('chat_conversations', {});
+      return conversationMap[chatId];
     } catch (err) {
-      console.error('Error loading chat messages:', err);
+      console.error('Error getting conversation ID:', err);
       return null;
     }
+  };
+
+  // Helper function to save conversation ID for a specific chat
+  const saveConversationIdForChat = (chatId, conversationId) => {
+    try {
+      const conversationMap = safeLocalStorage.get('chat_conversations', {});
+      conversationMap[chatId] = conversationId;
+      safeLocalStorage.set('chat_conversations', conversationMap);
+    } catch (err) {
+      console.error('Error saving conversation ID:', err);
+    }
+  };
+
+  // Function to update a chat in the history
+  const updateChatInHistory = (chatId, messages) => {
+    if (!chatId) {
+      console.error('Cannot update chat: No active chat ID');
+      return false;
+    }
+    
+    try {
+      console.log('Current chat history before update:', chatHistory);
+      console.log('Messages to save for chat', chatId, ':', messages);
+      
+      const updatedHistory = chatHistory.map(chat => {
+        if (chat.id === chatId) {
+          const updatedChat = { 
+            ...chat, 
+            messages, 
+            timestamp: new Date().toLocaleString(),
+            lastMessage: messages.length > 0 ? messages[messages.length - 1].content.substring(0, 50) : ''
+          };
+          console.log('Updated chat:', updatedChat);
+          return updatedChat;
+        }
+        return chat;
+      });
+      
+      console.log('Updated history to save:', updatedHistory);
+      setChatHistory(updatedHistory);
+      return safeLocalStorage.set('chatHistory', updatedHistory);
+    } catch (error) {
+      console.error('Error updating chat history:', error);
+      return false;
+    }
+  };
+
+  // Unified function to save messages
+  const saveMessages = (newMessages) => {
+    if (!activeChatId) {
+      console.error('Cannot save messages: No active chat ID');
+      return;
+    }
+    
+    console.log('Saving messages:', newMessages);
+    setChatMessages(newMessages);
+    updateChatInHistory(activeChatId, newMessages);
   };
 
   const initConversation = async () => {
@@ -122,11 +251,68 @@ const Home = () => {
       const data = await geminiService.initConversation();
       console.log('Conversation initialized:', data);
       setConversation(data.conversationId);
-      localStorage.setItem('current_conversation', data.conversationId);
+      
+      if (activeChatId) {
+        saveConversationIdForChat(activeChatId, data.conversationId);
+      }
     } catch (err) {
       setError('Failed to connect to Gemini API. Please try again later.');
       console.error('Initialization error:', err);
     }
+  };
+
+  // Function to handle chat selection from sidebar
+  const handleChatSelect = (chatId, messages) => {
+    setActiveChatId(chatId);
+    
+    // Find the chat in the current history
+    const selectedChat = chatHistory.find(chat => chat.id === chatId);
+    
+    // Set the messages from the selected chat
+    if (selectedChat && selectedChat.messages && Array.isArray(selectedChat.messages)) {
+      console.log('Loading messages for chat', chatId, ':', selectedChat.messages);
+      setChatMessages(selectedChat.messages);
+    } else if (messages && Array.isArray(messages)) {
+      console.log('Loading provided messages for chat', chatId, ':', messages);
+      setChatMessages(messages);
+    } else {
+      // Initialize with welcome message if no messages exist
+      console.log('No messages found for chat', chatId, ', initializing with welcome');
+      const welcomeMessage = {
+        id: Date.now(),
+        type: 'bot',
+        content: 'Hello! How can I help you today?',
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      
+      saveMessages([welcomeMessage]);
+    }
+  };
+
+  // Function to handle creating a new chat
+  const handleNewChat = () => {
+    const newChat = {
+      id: Date.now(),
+      title: "New Conversation",
+      timestamp: new Date().toLocaleString(),
+      messages: [{
+        id: Date.now(),
+        type: 'bot',
+        content: 'Hello! How can I help you today?',
+        timestamp: new Date().toLocaleTimeString(),
+      }]
+    };
+    
+    const updatedHistory = [newChat, ...chatHistory];
+    setChatHistory(updatedHistory);
+    safeLocalStorage.set('chatHistory', updatedHistory);
+    
+    // Set the new chat as active
+    setActiveChatId(newChat.id);
+    setChatMessages(newChat.messages);
+    
+    // Initialize a new conversation for this chat
+    initConversation();
   };
 
   const sendMessageToGemini = async (userMessage) => {
@@ -161,72 +347,153 @@ const Home = () => {
       if (data.conversationId && data.conversationId !== conversation) {
         console.log('Updating conversation ID to:', data.conversationId);
         setConversation(data.conversationId);
-        localStorage.setItem('current_conversation', data.conversationId);
+        
+        if (activeChatId) {
+          saveConversationIdForChat(activeChatId, data.conversationId);
+        }
       }
       
       // Add the bot's response to chat
       const botResponse = {
-        id: Date.now(), // Use timestamp for unique ID
+        id: Date.now(),
         type: 'bot',
         content: data.response,
         timestamp: new Date().toLocaleTimeString(),
-        mood: sentiment, // Store the mood with the message for potential UI adaptation
+        mood: sentiment,
       };
       
-      setChatMessages((prev) => [...prev, botResponse]);
+      // Get existing chat from localStorage
+      const existingChats = safeLocalStorage.get('chatHistory', []);
+      const chatIndex = existingChats.findIndex(chat => chat.id === activeChatId);
+      
+      if (chatIndex !== -1) {
+        // Get messages without loading indicator
+        const storedMessages = existingChats[chatIndex].messages || [];
+        const updatedMessages = [...storedMessages, botResponse];
+        
+        // Update in localStorage
+        existingChats[chatIndex].messages = updatedMessages;
+        existingChats[chatIndex].lastMessage = botResponse.content.substring(0, 50);
+        existingChats[chatIndex].timestamp = new Date().toLocaleString();
+        
+        // Save to localStorage
+        safeLocalStorage.set('chatHistory', existingChats);
+        
+        // Update state (remove loading indicator)
+        setChatMessages(updatedMessages);
+        setChatHistory(existingChats);
+        
+        // Update chat title based on first message if it's "New Conversation"
+        if (existingChats[chatIndex].title === "New Conversation" && updatedMessages.length >= 3) {
+          // Extract a title from the first user message (limited to 30 chars)
+          const firstUserMessage = updatedMessages.find(msg => msg.type === 'user');
+          if (firstUserMessage) {
+            const newTitle = firstUserMessage.content.substring(0, 30) + (firstUserMessage.content.length > 30 ? '...' : '');
+            
+            // Update chat title in history
+            existingChats[chatIndex].title = newTitle;
+            safeLocalStorage.set('chatHistory', existingChats);
+            setChatHistory(existingChats);
+          }
+        }
+      }
     } catch (err) {
       console.error('Error sending message:', err);
       setError(`Failed to get response: ${err.message}`);
       
       // Add error message to chat
       const errorMessage = {
-        id: Date.now(), // Use timestamp for unique ID
+        id: Date.now(),
         type: 'bot',
         content: `Sorry, I encountered an error: ${err.message}`,
         timestamp: new Date().toLocaleTimeString(),
         isError: true,
       };
       
-      setChatMessages((prev) => [...prev, errorMessage]);
+      // Get existing chat from localStorage
+      const existingChats = safeLocalStorage.get('chatHistory', []);
+      const chatIndex = existingChats.findIndex(chat => chat.id === activeChatId);
+      
+      if (chatIndex !== -1) {
+        // Get messages without loading indicator
+        const storedMessages = existingChats[chatIndex].messages || [];
+        const updatedMessages = [...storedMessages, errorMessage];
+        
+        // Update in localStorage
+        existingChats[chatIndex].messages = updatedMessages;
+        existingChats[chatIndex].lastMessage = errorMessage.content.substring(0, 50);
+        existingChats[chatIndex].timestamp = new Date().toLocaleString();
+        
+        // Save to localStorage
+        safeLocalStorage.set('chatHistory', existingChats);
+        
+        // Update state (remove loading indicator)
+        setChatMessages(updatedMessages);
+        setChatHistory(existingChats);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
+  // In your handleSubmit function, ensure the message is saved to localStorage:
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!message.trim()) return;
-
+    if (!message.trim() || !activeChatId) return;
+  
     // Add user message to chat
     const userMessage = {
-      id: Date.now(), // Use timestamp for unique ID
+      id: Date.now(),
       type: 'user',
       content: message,
       timestamp: new Date().toLocaleTimeString(),
     };
-
-    setChatMessages((prev) => [...prev, userMessage]);
+  
+    // Get existing chat from localStorage first
+    const existingChats = safeLocalStorage.get('chatHistory', []);
+    const chatIndex = existingChats.findIndex(chat => chat.id === activeChatId);
+    
+    if (chatIndex !== -1) {
+      // Deep copy the existing messages
+      const existingMessages = [...(existingChats[chatIndex].messages || [])];
+      
+      // Filter out any loading messages with "..." content
+      const filteredMessages = existingMessages.filter(msg => msg.content !== "...");
+      
+      // Add new user message
+      const updatedMessages = [...filteredMessages, userMessage];
+      
+      // Update in localStorage
+      existingChats[chatIndex].messages = updatedMessages;
+      existingChats[chatIndex].lastMessage = userMessage.content.substring(0, 50);
+      existingChats[chatIndex].timestamp = new Date().toLocaleString();
+      
+      // Save to localStorage
+      safeLocalStorage.set('chatHistory', existingChats);
+      
+      // Update state
+      setChatMessages(updatedMessages);
+      setChatHistory(existingChats);
+    }
     
     // Store the message locally before clearing the input
     const sentMessage = message;
     setMessage('');
     
-    // Add loading indicator
+    // Add loading indicator only to UI state, not to localStorage
     const loadingMessage = {
-      id: `loading-${Date.now()}`, // Unique ID with timestamp
+      id: `loading-${Date.now()}`,
       type: 'bot',
       content: '...',
       timestamp: new Date().toLocaleTimeString(),
       isLoading: true,
     };
     
-    setChatMessages((prev) => [...prev, loadingMessage]);
+    // Update UI with loading indicator
+    setChatMessages(prev => [...prev, loadingMessage]);
     
     // Send to Gemini API
     await sendMessageToGemini(sentMessage);
-    
-    // Remove loading indicator - using the fact that only one message can have isLoading=true
-    setChatMessages((prev) => prev.filter(msg => !msg.isLoading));
   };
 
   // Voice input functionality
@@ -351,11 +618,47 @@ const Home = () => {
     }
   };
 
+  // Handle chat deletion
+  const handleDeleteChat = (chatId) => {
+    try {
+      const updatedHistory = chatHistory.filter(chat => chat.id !== chatId);
+      setChatHistory(updatedHistory);
+      safeLocalStorage.set('chatHistory', updatedHistory);
+      
+      // Remove conversation ID mapping
+      const conversationMap = safeLocalStorage.get('chat_conversations', {});
+      if (conversationMap[chatId]) {
+        delete conversationMap[chatId];
+        safeLocalStorage.set('chat_conversations', conversationMap);
+      }
+      
+      // If the active chat is deleted, select another chat if available
+      if (activeChatId === chatId) {
+        if (updatedHistory.length > 0) {
+          handleChatSelect(updatedHistory[0].id, updatedHistory[0].messages);
+        } else {
+          // If no chats left, create a new one
+          handleNewChat();
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      setError('Failed to delete chat. Please try again.');
+    }
+  };
+
   return (
     <>
       <NavbarIn />
       <div className="flex pt-20 h-screen bg-gray-100 dark:bg-gray-900">
-        <Sidebar />
+     
+        <Sidebar 
+          onChatSelect={handleChatSelect} 
+          activeChatId={activeChatId}
+          chatHistory={chatHistory}
+          onNewChat={handleNewChat}
+          onDeleteChat={handleDeleteChat}
+        />
         
         <main className="flex-1 flex flex-col">
           {error && (
@@ -383,49 +686,53 @@ const Home = () => {
           )}
           
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {chatMessages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex items-start gap-3 ${
-                  msg.type === 'user' ? 'flex-row-reverse' : ''
-                }`}
-              >
-                <div
-                  className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    msg.type === 'user' ? 'bg-blue-500' : 'bg-gray-600'
-                  }`}
-                >
-                  {msg.type === 'user' ? (
-                    <User className="w-5 h-5 text-white" />
-                  ) : (
-                    <Bot className="w-5 h-5 text-white" />
-                  )}
-                </div>
-                <div
-                  className={`max-w-[70%] rounded-2xl p-4 ${
-                    msg.type === 'user'
-                      ? 'bg-blue-500 text-white'
-                      : msg.isError 
-                        ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-100'
-                        : `bg-white dark:bg-gray-800 dark:text-white ${getMoodStyleForBot(msg.mood)}`
-                  }`}
-                >
-                  {msg.isLoading ? (
-                    <div className="flex items-center space-x-2">
-                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse"></div>
-                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
-                    </div>
-                  ) : (
-                    <p className="text-sm">{msg.content}</p>
-                  )}
-                  <span className="text-xs opacity-70 mt-1 block">
-                    {msg.timestamp}
-                  </span>
+            {activeChatId ? (
+              <>
+                {chatMessages
+  .filter(msg => msg.content !== "..." && !msg.isLoading)
+  .map((msg) => (
+    <div
+      key={msg.id}
+      className={`flex items-start gap-3 ${
+        msg.type === 'user' ? 'flex-row-reverse' : ''
+      }`}
+    >
+      <div
+        className={`w-8 h-8 rounded-full flex items-center justify-center ${
+          msg.type === 'user' ? 'bg-blue-500' : 'bg-gray-600'
+        }`}
+      >
+        {msg.type === 'user' ? (
+          <User className="w-5 h-5 text-white" />
+        ) : (
+          <Bot className="w-5 h-5 text-white" />
+        )}
+      </div>
+      <div
+        className={`max-w-[70%] rounded-2xl p-4 ${
+          msg.type === 'user'
+            ? 'bg-blue-500 text-white'
+            : msg.isError 
+              ? 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-100'
+              : `bg-white dark:bg-gray-800 dark:text-white ${getMoodStyleForBot(msg.mood)}`
+        }`}
+      >
+        <p className="text-sm">{msg.content}</p>
+        <span className="text-xs opacity-70 mt-1 block">
+          {msg.timestamp}
+        </span>
+      </div>
+    </div>
+  ))}
+                <div ref={chatEndRef} /> {/* Empty div for auto-scrolling */}
+              </>
+            ) : (
+              <div className="flex justify-center items-center h-full">
+                <div className="text-center p-8 bg-white dark:bg-gray-800 rounded-lg shadow">
+                  <p className="text-lg text-gray-600 dark:text-gray-300">Select a chat from the sidebar or create a new one</p>
                 </div>
               </div>
-            ))}
-            <div ref={chatEndRef} /> {/* Empty div for auto-scrolling */}
+            )}
           </div>
 
           <form
@@ -439,7 +746,7 @@ const Home = () => {
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={isRecording ? "Listening..." : "Type your message..."}
                 className="flex-1 p-3 rounded-lg border dark:border-gray-700 focus:outline-none focus:border-blue-500 bg-transparent dark:text-white"
-                disabled={isLoading}
+                disabled={isLoading || !activeChatId}
               />
               
               {/* Voice input button */}
@@ -451,7 +758,7 @@ const Home = () => {
                     ? 'bg-red-500 text-white hover:bg-red-600' 
                     : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
-                disabled={isLoading}
+                disabled={isLoading || !activeChatId}
                 title={isRecording ? "Stop recording" : "Start voice input"}
               >
                 {isRecording ? (
@@ -477,9 +784,9 @@ const Home = () => {
               <button
                 type="submit"
                 className={`p-3 bg-blue-500 text-white rounded-lg transition-colors ${
-                  isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-600'
+                  isLoading || !activeChatId ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-600'
                 }`}
-                disabled={isLoading}
+                disabled={isLoading || !activeChatId}
               >
                 <Send className="w-5 h-5" />
               </button>
